@@ -31,13 +31,12 @@ def get_candles():
     start_time = end_time.shift(days=-1).format('X')
     end_time = end_time.format('X')
     params = {
-        "symbol": 'ETHIDR',
+        "symbol": pair,
         "from": int(start_time.split('.')[0]),
         "to": int(end_time.split('.')[0]),
         "resolution": "5"
     }
     response = requests.get('https://ajax.luno.com/ajax/1/udf/history',
-                auth = HTTPBasicAuth(key, sign),
                 params=params)
     response = response.json()
     if(response.get('s', False) == 'ok'):
