@@ -16,6 +16,7 @@ min_coin = float(os.getenv('MIN_COIN') )
 min_rsi = float(os.getenv('MIN_RSI'))
 max_rsi = float(os.getenv('MAX_RSI'))
 profit = float(os.getenv('PROFIT'))
+used_idr = float(os.getenv('USED_IDR'))
 idr = pair[3:6]
 coin = pair[0:3]
 
@@ -117,7 +118,7 @@ def cancel_order(order_id):
 
 def get_orders():
     params = {
-        "pair": "ETHIDR"
+        "pair": pair
     }
     res = requests.get(f'https://api.luno.com/api/exchange/2/listorders',
                 auth = HTTPBasicAuth(key, sign),
@@ -128,9 +129,10 @@ def get_orders():
         if(len(ao) > 0):
             order_id = ao[:1].order_id.values[0]
             limit_price = float(ao[:1].limit_price.values[0])
+            limit_volume = float(ao[:1].limit_volume.values[0])
             type_order = ao[:1].side.values[0]
             type_order = type_order == 'BUY'
-            return(True, order_id, False, limit_price, type_order)
+            return(True, order_id, False, limit_price, limit_volume, type_order)
     else:
         res = requests.get(f'https://api.luno.com/api/1/listorders',
             auth = HTTPBasicAuth(key, sign),
@@ -143,17 +145,19 @@ def get_orders():
             if(len(co) > 0):
                 order_id = co[:1].order_id.values[0]
                 limit_price = float(co[:1].limit_price.values[0])
+                limit_volume = float(co[:1].limit_volume.values[0])
                 type_order = co[:1].type.values[0]
                 type_order = (type_order == 'BID') | (type_order == 'BUY')
-                return(True, order_id, True, limit_price, type_order)
+                return(True, order_id, True, limit_price, limit_volume, type_order)
             po = od[od.state == 'PENDING'][:1]
             if(len(po) > 0):
                 order_id = po[:1].order_id.values[0]
                 limit_price = float(po[:1].limit_price.values[0])
+                limit_volume = float(po[:1].limit_volume.values[0])
                 type_order = po[:1].type.values[0]
                 type_order = (type_order == 'BID') | (type_order == 'BUY')
-                return(True, order_id, False, limit_price, type_order)
-    return(False, "", False, False)
+                return(True, order_id, False, limit_price, limit_volume, type_order)
+    return(False, "", False, 0, 0, False)
 
 def lambda_handler(event, context):   
     # MAIN
@@ -166,21 +170,23 @@ def lambda_handler(event, context):
     if(not is_success):
         print("FAILED GET TRADES DATA")
         return -1
-    is_success, order_id, is_complete, limit_price, is_buy = get_orders()
+    is_success, order_id, is_complete, limit_price, limit_volume, is_buy = get_orders()
     if(not is_success):
         print("FAILED GET ORDER DATA")
         return -1
     print(f'{idr}: {idr_wallet}\n{coin}: {coin_wallet}')
-    print(f'RSI NOW: {rsi}\nCLOSE: {close_price}\nLIMIT PRICE: {limit_price}\nLATEST STATUS: {"WAITING ORDER" if(not is_complete) else "COMPLETE"} {"BUY" if(is_buy) else "SELL"}\nORDER ID: {order_id}')
+    print(f'RSI NOW: {rsi}\nCLOSE: {close_price}\nLIMIT PRICE: {limit_price}\nLIMIT VOLUME: {limit_volume}\nLATEST STATUS: {"WAITING ORDER" if(not is_complete) else "COMPLETE"} {"BUY" if(is_buy) else "SELL"}\nORDER ID: {order_id}')
     
     if(not is_complete):
         if((rsi > min_rsi) & (rsi < max_rsi)):
             if(not is_buy & (limit_price > close_price)):
                 cancel_order(order_id)
                 print('CANCEL BUY ORDER')
+                return 0 
             elif(is_buy & (limit_price < close_price)):
                 cancel_order(order_id)
                 print('CANCEL SELL ORDER')
+                return 0 
             else:
                 print(f'WAITING TO {"BUY" if(is_buy) else "SELL"}...')
                 return 0    
@@ -190,7 +196,10 @@ def lambda_handler(event, context):
 
     if((idr_wallet >= min_idr) and (not is_buy)):
         if(rsi < min_rsi):
-            is_success, error = buy(pair, close_price, idr_wallet)
+            if(limit_price == 0):
+                is_success, error = buy(pair, close_price, used_idr)
+            else:
+                is_success, error = buy(pair, close_price, limit_volume * limit_price)
             if(not is_success):
                 print("FAILED BUY")
                 print(error)
