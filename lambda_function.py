@@ -120,6 +120,13 @@ def get_orders():
     params = {
         "pair": pair
     }
+    fee = requests.get(f'https://api.luno.com/api/1/fee_info',
+                auth = HTTPBasicAuth(key, sign),
+                params = params)
+    fee = fee.json()
+    maker_fee = float(fee.get('maker_fee', 0))
+    taker_fee = float(fee.get('taker_fee', 0))
+
     res = requests.get(f'https://api.luno.com/api/exchange/2/listorders',
                 auth = HTTPBasicAuth(key, sign),
                 params = params)
@@ -148,6 +155,10 @@ def get_orders():
                 limit_volume = float(co[:1].limit_volume.values[0])
                 type_order = co[:1].type.values[0]
                 type_order = (type_order == 'BID') | (type_order == 'BUY')
+                if(type_order == True):
+                    limit_volume = limit_volume - (limit_volume * taker_fee)
+                else:
+                    limit_volume = limit_volume - (limit_volume * maker_fee)
                 return(True, order_id, True, limit_price, limit_volume, type_order)
             po = od[od.state == 'PENDING'][:1]
             if(len(po) > 0):
@@ -156,57 +167,73 @@ def get_orders():
                 limit_volume = float(po[:1].limit_volume.values[0])
                 type_order = po[:1].type.values[0]
                 type_order = (type_order == 'BID') | (type_order == 'BUY')
+                if(type_order == True):
+                    limit_volume = limit_volume - (limit_volume * taker_fee)
+                else:
+                    limit_volume = limit_volume - (limit_volume * maker_fee)
                 return(True, order_id, False, limit_price, limit_volume, type_order)
+        else:
+            return(True, "", True, 0, 0, False)
     return(False, "", False, 0, 0, False)
 
 def lambda_handler(event, context):   
     # MAIN
+    print('START!')
     is_success, idr_wallet, coin_wallet = get_balance(idr, coin) 
     if(not is_success):
-        print("FAILED GET BALANCE")
+        print("! FAILED GET BALANCE")
         return -1
-    print('START!')
     is_success, close_price, rsi = get_candles()
     if(not is_success):
-        print("FAILED GET TRADES DATA")
+        print("! FAILED GET TRADES DATA")
         return -1
     is_success, order_id, is_complete, limit_price, limit_volume, is_buy = get_orders()
     if(not is_success):
-        print("FAILED GET ORDER DATA")
+        print("! FAILED GET ORDER DATA")
         return -1
-    print(f'{idr}: {idr_wallet}\n{coin}: {coin_wallet}')
-    print(f'RSI NOW: {rsi}\nCLOSE: {close_price}\nLIMIT PRICE: {limit_price}\nLIMIT VOLUME: {limit_volume}\nLATEST STATUS: {"WAITING ORDER" if(not is_complete) else "COMPLETE"} {"BUY" if(is_buy) else "SELL"}\nORDER ID: {order_id}')
+    profit = round((close_price * limit_volume) - (limit_price * limit_volume))
+    print(f'''
+        SUMARRY: Rp.{round(close_price * limit_volume)} ({'+' if(profit >= 0) else '-'}Rp.{profit})
+        CLOSE: {close_price}
+        RSI NOW: {round(rsi)}%
+        {coin}: {coin_wallet}
+        {idr}: Rp.{round(idr_wallet)}
+        ORDER ID: {order_id}
+        LATEST STATUS: {"WAITING ORDER" if(not is_complete) else "COMPLETE"} {"BUY" if(is_buy) else "SELL"}
+        LIMIT PRICE: {limit_price}
+        LIMIT VOLUME: {limit_volume}
+    ''')
     
     if(not is_complete):
         if((rsi > min_rsi) & (rsi < max_rsi)):
             if(not is_buy & (limit_price > close_price)):
                 cancel_order(order_id)
-                print('CANCEL BUY ORDER')
+                print('> CANCEL BUY ORDER')
                 return 0 
             elif(is_buy & (limit_price < close_price)):
                 cancel_order(order_id)
-                print('CANCEL SELL ORDER')
+                print('> CANCEL SELL ORDER')
                 return 0 
             else:
-                print(f'WAITING TO {"BUY" if(is_buy) else "SELL"}...')
+                print(f'> WAITING TO {"BUY" if(is_buy) else "SELL"}...')
                 return 0    
         else:
-            print(f'WAITING TO {"BUY" if(is_buy) else "SELL"}...')
+            print(f'> WAITING TO {"BUY" if(is_buy) else "SELL"}...')
             return 0 
 
     if((idr_wallet >= min_idr) and (not is_buy)):
         if(rsi < min_rsi):
             if(limit_price == 0):
-                is_success, error = buy(pair, close_price, used_idr)
+                is_success, error = buy(pair, close_price, used_idr if(idr_wallet >= used_idr) else idr_wallet)
             else:
-                is_success, error = buy(pair, close_price, limit_volume * limit_price)
+                is_success, error = buy(pair, close_price, (limit_volume * limit_price) if(idr_wallet >= (limit_volume * limit_price)) else idr_wallet)
             if(not is_success):
-                print("FAILED BUY")
+                print("! FAILED BUY")
                 print(error)
                 return -1
-            print('REQUEST BUY IS SENT')
+            print('> REQUEST BUY IS SENT')
         else:
-            print('RSI BUY SIGNAL DOESN\'T MATCH!')
+            print('> RSI BUY SIGNAL DOESN\'T MATCH')
 
     elif((coin_wallet >= min_coin) and is_buy):
         if(rsi > max_rsi):
@@ -215,18 +242,18 @@ def lambda_handler(event, context):
             if(saved_close_price <= close_price):
                 is_success, error = sell(pair, close_price, coin_wallet)    
                 if(not is_success):
-                    print("FAILED SELL")
+                    print("! FAILED SELL")
                     print(error)
                     return -1  
-                print('REQUEST SELL IS SENT!')
+                print('> REQUEST SELL IS SENT')
             else:
-                print('PRICE IS TOO LOW!')
+                print('> PRICE IS TOO LOW')
         else:
-            print('RSI SELL SIGNAL DOESN\'T MATCH!')
+            print('> RSI SELL SIGNAL DOESN\'T MATCH')
     else:
-        print("EMPTY WALLET!")
+        print("> EMPTY WALLET!")
 
     print('SLEEPING...')
 
-# lambda_handler(None, None)
+lambda_handler(None, None)
 
